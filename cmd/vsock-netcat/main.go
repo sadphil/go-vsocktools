@@ -285,7 +285,11 @@ func session(log *logging.Logger, opt *options, c *vsock.Conn) int {
 		log.Infof("child exited with code %d", code)
 		return code
 	}
-	if err := relayStdio(log, c, stdin(), os.Stdout, opt.quit); err != nil {
+	// After the peer finishes sending, keep relaying piped stdin so a peer
+	// that half-closes first gets all of it; a console user or the next -k
+	// client must not wait for stdin, though.
+	waitStdin := !opt.keep && !stdinIsConsole()
+	if err := relayStdio(log, c, stdin(), os.Stdout, opt.quit, waitStdin); err != nil {
 		log.Errorf("%v", err)
 		return 1
 	}

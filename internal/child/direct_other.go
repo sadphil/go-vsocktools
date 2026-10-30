@@ -10,5 +10,5 @@ import (
 )
 
 func runDirect(log *logging.Logger, s *Spec, env []string, c *vsock.Conn) (int, error) {
-	return 0, errors.New("passing the socket handle is only supported on windows; use -pipe")
+	return 0, errors.New("passing the socket handle is only supported on windows; drop -direct")
 }

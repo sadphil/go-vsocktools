@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -273,26 +274,63 @@ func (c *Conn) Read(p []byte) (int, error) {
 	return int(n), nil
 }
 
-// Write writes all of p to the connection.
+// statusNoCredit is the raw NTSTATUS (STATUS_BUFFER_TOO_SMALL) the viosock
+// provider returns from WSASend on a blocking socket when the data does not
+// fit into the peer's remaining receive credit, instead of waiting for it.
+const statusNoCredit = windows.Errno(0xC0000023)
+
+// Smallest send attempted while the peer is short of credit, and the longest
+// pause between attempts once even that does not fit.
+const (
+	minCreditChunk = 1024
+	maxCreditWait  = 20 * time.Millisecond
+)
+
+// Write writes all of p to the connection. When the peer is short of receive
+// credit (see statusNoCredit) it retries with smaller chunks and then waits
+// for the peer to free buffer space, like a blocking send should.
 func (c *Conn) Write(p []byte) (int, error) {
 	if err := c.acquire(); err != nil {
 		return 0, c.opError("write", err)
 	}
 	defer c.release()
 	written := 0
+	limit := maxIO
+	var wait time.Duration
 	for written < len(p) {
 		chunk := p[written:]
-		if len(chunk) > maxIO {
-			chunk = chunk[:maxIO]
+		if len(chunk) > limit {
+			chunk = chunk[:limit]
 		}
 		buf := windows.WSABuf{Len: uint32(len(chunk)), Buf: &chunk[0]}
 		var n uint32
-		if err := windows.WSASend(c.h, &buf, 1, &n, 0, nil, nil); err != nil {
-			return written + int(n), c.opError("write", os.NewSyscallError("WSASend", err))
-		}
+		err := windows.WSASend(c.h, &buf, 1, &n, 0, nil, nil)
 		written += int(n)
+		switch {
+		case err == nil:
+			limit = min(2*limit, maxIO)
+			wait = 0
+		case !errors.Is(err, statusNoCredit):
+			return written, c.opError("write", os.NewSyscallError("WSASend", err))
+		case n > 0:
+			// Partial progress; try the rest right away.
+		case len(chunk) > minCreditChunk:
+			limit = max(len(chunk)/2, minCreditChunk)
+		default:
+			if c.isClosed() {
+				return written, c.opError("write", net.ErrClosed)
+			}
+			wait = min(max(2*wait, 100*time.Microsecond), maxCreditWait)
+			time.Sleep(wait)
+		}
 	}
 	return written, nil
+}
+
+func (c *Conn) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 // CloseWrite shuts down the sending side of the connection.

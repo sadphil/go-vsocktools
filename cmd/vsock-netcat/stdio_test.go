@@ -41,7 +41,7 @@ func TestRelayStdioHalfClose(t *testing.T) {
 	var out bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		done <- relayStdio(testLog, local, newStdinPump(strings.NewReader("request")), &out, -1)
+		done <- relayStdio(testLog, local, newStdinPump(strings.NewReader("request")), &out, -1, true)
 	}()
 	got, err := io.ReadAll(peer) // returns at the half-close
 	if err != nil || string(got) != "request" {
@@ -68,7 +68,7 @@ func TestRelayStdioQuit(t *testing.T) {
 	defer peer.Close()
 	done := make(chan error, 1)
 	go func() {
-		done <- relayStdio(testLog, local, newStdinPump(strings.NewReader("x")), io.Discard, 20*time.Millisecond)
+		done <- relayStdio(testLog, local, newStdinPump(strings.NewReader("x")), io.Discard, 20*time.Millisecond, true)
 	}()
 	select {
 	case err := <-done:
@@ -80,14 +80,15 @@ func TestRelayStdioQuit(t *testing.T) {
 	}
 }
 
-// Data read from stdin after a session ended goes to the next session.
+// Data read from stdin after a session ended goes to the next session (-k,
+// where sessions do not wait for stdin).
 func TestStdinPumpAcrossSessions(t *testing.T) {
 	pr, pw := io.Pipe()
 	pump := newStdinPump(pr)
 
 	local1, peer1 := tcpPair(t)
 	done := make(chan error, 1)
-	go func() { done <- relayStdio(testLog, local1, pump, io.Discard, -1) }()
+	go func() { done <- relayStdio(testLog, local1, pump, io.Discard, -1, false) }()
 	pw.Write([]byte("one"))
 	buf := make([]byte, 3)
 	if _, err := io.ReadFull(peer1, buf); err != nil || string(buf) != "one" {
@@ -101,7 +102,7 @@ func TestStdinPumpAcrossSessions(t *testing.T) {
 	go pw.Write([]byte("two")) // read by the pump while no session is active
 	time.Sleep(20 * time.Millisecond)
 	local2, peer2 := tcpPair(t)
-	go func() { done <- relayStdio(testLog, local2, pump, io.Discard, -1) }()
+	go func() { done <- relayStdio(testLog, local2, pump, io.Discard, -1, false) }()
 	pw.Close()
 	got, err := io.ReadAll(peer2)
 	if err != nil || string(got) != "two" {
@@ -110,5 +111,30 @@ func TestStdinPumpAcrossSessions(t *testing.T) {
 	peer2.Close()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A peer that half-closes first still receives stdin that arrives later,
+// unless stdin is an interactive console.
+func TestRelayStdioPeerHalfClosesFirst(t *testing.T) {
+	for _, waitStdin := range []bool{true, false} {
+		local, peer := tcpPair(t)
+		pr, pw := io.Pipe()
+		done := make(chan error, 1)
+		go func() { done <- relayStdio(testLog, local, newStdinPump(pr), io.Discard, -1, waitStdin) }()
+		peer.CloseWrite()
+		time.Sleep(20 * time.Millisecond)
+		go func() {
+			pw.Write([]byte("late"))
+			pw.Close()
+		}()
+		got, _ := io.ReadAll(peer)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if want := map[bool]string{true: "late", false: ""}[waitStdin]; string(got) != want {
+			t.Errorf("waitStdin=%v: peer got %q, want %q", waitStdin, got, want)
+		}
+		peer.Close()
 	}
 }

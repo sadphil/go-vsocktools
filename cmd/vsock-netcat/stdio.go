@@ -76,11 +76,17 @@ func (r *pumpReader) Read(b []byte) (int, error) {
 
 // relayStdio relays data from the pump to c and from c to out. EOF on the
 // pump shuts down the sending side of c; quit >= 0 then also closes c after
-// that delay. It returns when c has been closed by the peer (or by quit).
-func relayStdio(log *logging.Logger, c relay.HalfCloser, p *stdinPump, out io.Writer, quit time.Duration) error {
+// that delay.
+//
+// It returns once the peer has finished sending and, if waitStdin is set,
+// stdin has been relayed too, so a peer that half-closes first still gets
+// all of stdin. Without waitStdin (interactive console) it returns as soon as
+// the peer has finished sending.
+func relayStdio(log *logging.Logger, c relay.HalfCloser, p *stdinPump, out io.Writer, quit time.Duration, waitStdin bool) error {
 	defer c.Close()
-	done := make(chan struct{})
-	inDone := make(chan struct{})
+	done := make(chan struct{})     // session over: stop reading the pump
+	inCopied := make(chan struct{}) // stdin->vsock copy finished
+	inDone := make(chan struct{})   // stdin goroutine exited
 	var (
 		inN      int64
 		quitting atomic.Bool
@@ -89,6 +95,7 @@ func relayStdio(log *logging.Logger, c relay.HalfCloser, p *stdinPump, out io.Wr
 		defer close(inDone)
 		var err error
 		inN, err = relay.Copy(log, "stdin->vsock", c, &pumpReader{p: p, done: done})
+		close(inCopied)
 		switch {
 		case errors.Is(err, errSessionDone):
 			return
@@ -112,6 +119,14 @@ func relayStdio(log *logging.Logger, c relay.HalfCloser, p *stdinPump, out io.Wr
 	}()
 
 	outN, err := relay.Copy(log, "vsock->stdout", out, c)
+	if err == nil && waitStdin {
+		select {
+		case <-inCopied:
+		default:
+			log.Debugf("vsock->stdout: peer finished sending, still relaying stdin")
+			<-inCopied
+		}
+	}
 	close(done)
 	c.Close()
 	<-inDone
@@ -120,4 +135,10 @@ func relayStdio(log *logging.Logger, c relay.HalfCloser, p *stdinPump, out io.Wr
 		return fmt.Errorf("vsock->stdout: %w", err)
 	}
 	return nil
+}
+
+// stdinIsConsole reports whether stdin is an interactive console.
+func stdinIsConsole() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }

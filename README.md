@@ -26,6 +26,28 @@ write.
 The vsock address family is looked up in the Winsock catalog at startup.
 If detection fails, pass it with `-af` (viosock uses 40).
 
+## viosock driver notes
+
+Verified on Windows 11 (build 26300) with the viosock provider
+"Virtio Vsock STREAM" (AF 40) and a Linux vhost-vsock host:
+
+* **Socket handles do not support `ReadFile`/`WriteFile`.** Both fail with
+  `ERROR_INVALID_PARAMETER`, even though the provider advertises
+  `XP1_IFS_HANDLES`; only `WSARecv`/`WSASend` work. A child process
+  therefore cannot use the socket as stdin/stdout directly, so vsock-inetd
+  and `vsock-netcat -e` relay through pipes by default (`-direct` hands over
+  the raw handle for providers that support it).
+* **Blocking sends do not wait for peer credit.** When the peer's receive
+  buffer is full (256 KiB by default on a Linux host), `WSASend` on a
+  blocking socket fails at once with the raw NTSTATUS `0xC0000023`
+  (`STATUS_BUFFER_TOO_SMALL`) instead of blocking. The tools retry with
+  smaller chunks and then back off (up to 20 ms between attempts) until the
+  peer frees space, so slow readers on the host side are handled.
+* **Avoid zero-length I/O.** During testing, zero-length `WSASend` calls (in
+  a probe also using `select()` and `FIONREAD`) were followed by the QEMU
+  process exiting; the exact trigger was not isolated. The tools never issue
+  zero-length reads or writes.
+
 ## Building
 
 Go 1.25 or newer and GNU make:
@@ -110,7 +132,7 @@ On the host, e.g.: `socat VSOCK-LISTEN:22,fork TCP:127.0.0.1:22`.
 
 ```bat
 vsock-inetd -port 5000 -allow-cid 2 -- C:\Windows\System32\cmd.exe /q
-vsock-inetd -port 5001 -pipe -stderr socket -v -- powershell.exe -NoLogo -NoProfile -Command -
+vsock-inetd -port 5001 -stderr socket -v -- powershell.exe -NoLogo -NoProfile -Command -
 ```
 
 Everything after the flags (or after `--`) is the program and its
@@ -119,23 +141,25 @@ arguments. The program is resolved through `PATH` once at startup.
 | Flag | Default | Meaning |
 |---|---|---|
 | `-wait` | `false` | inetd *wait* mode: serve one client at a time |
-| `-pipe` | `false` | give the child anonymous pipes relayed by vsock-inetd instead of the socket handle |
+| `-direct` | `false` | hand the socket handle itself to the child instead of relayed pipes (not supported by viosock, see below) |
 | `-stderr MODE` | `inherit` | child stderr: `inherit` (vsock-inetd's stderr), `socket` or `null` |
 
 The child environment additionally contains `VSOCK_REMOTE_CID`,
 `VSOCK_REMOTE_PORT`, `VSOCK_LOCAL_CID` and `VSOCK_LOCAL_PORT`.
 
-**Handle mode (default).** The accepted SOCKET is made the child's
-`hStdInput`/`hStdOutput` through `STARTUPINFO`, like classic inetd. Only the
-socket (and the stderr handle) are inherited, via
-`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, so concurrently started children never
-see each other's sockets. The data does not pass through vsock-inetd, so `-v`
-cannot report byte counts. This requires the Winsock provider to hand out
-real file handles usable with `ReadFile`/`WriteFile`.
+**Pipe mode (default).** The child's stdin/stdout are anonymous pipes and
+vsock-inetd copies between them and the socket, so `-v` shows every
+transfer. Pipes are inherited through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`,
+so concurrently started children never see each other's handles.
 
-**Pipe mode (`-pipe`).** The child gets anonymous pipes and vsock-inetd
-copies between them and the socket. Use it when a program cannot work with a
-socket handle directly, or to see byte counts with `-v`.
+**Handle mode (`-direct`).** The accepted SOCKET itself is made the child's
+`hStdInput`/`hStdOutput` through `STARTUPINFO`, like classic inetd, and the
+data does not pass through vsock-inetd. This requires a Winsock provider
+whose socket handles work with `ReadFile`/`WriteFile`. **The virtio-win
+viosock provider's do not**: both calls fail with `ERROR_INVALID_PARAMETER`
+(verified on Windows 11 build 26300), and a child such as `cmd.exe` exits
+at once reporting "The process tried to write to a nonexistent pipe". The
+mode is kept for providers that support it.
 
 From the host: `socat - VSOCK-CONNECT:3:5000`.
 
@@ -164,7 +188,7 @@ vsock-netcat -l -k -e cmd.exe 5000
 | `-q DURATION` | wait | after EOF on stdin, close the connection after this delay instead of waiting for the peer |
 | `-z` | | connect and close at once; the exit status tells whether the port is open |
 | `-e PROGRAM` | | run PROGRAM with stdin/stdout connected to the peer |
-| `-pipe`, `-stderr` | | as for vsock-inetd, with `-e` |
+| `-direct`, `-stderr` | | as for vsock-inetd, with `-e` |
 | `-v` | | report connections |
 | `-vv` | | also log every read/write with its byte count |
 

@@ -1,6 +1,11 @@
 // Package child runs a program for a vsock connection with the program's
-// standard input and output connected to the client, either by handing it
-// the socket handle itself or through anonymous pipes relayed by the caller.
+// standard input and output connected to the client: through anonymous pipes
+// relayed by the caller, or optionally by handing it the socket handle
+// itself.
+//
+// Handing over the socket handle only works with Winsock providers whose
+// handles support ReadFile/WriteFile. The virtio-win viosock provider's do
+// not (both fail with ERROR_INVALID_PARAMETER), so pipes are the default.
 package child
 
 import (
@@ -29,15 +34,15 @@ const (
 type Spec struct {
 	Path   string   // resolved program path
 	Args   []string // argv; Args[0] as given by the user
-	Pipe   bool     // relay through pipes instead of passing the socket handle
+	Direct bool     // pass the socket handle instead of relaying through pipes
 	Stderr string   // one of the Stderr* constants
 }
 
-// RegisterFlags registers -pipe and -stderr on fs. owner is the name of the
+// RegisterFlags registers -direct and -stderr on fs. owner is the name of the
 // program that relays data and owns the inherited stderr.
 func (s *Spec) RegisterFlags(fs *flag.FlagSet, owner string) {
-	fs.BoolVar(&s.Pipe, "pipe", false, "connect the child through anonymous pipes relayed by "+owner+
-		" instead of handing it the socket handle (needed for byte counts in verbose mode)")
+	fs.BoolVar(&s.Direct, "direct", false, "hand the socket handle itself to the child as stdin/stdout instead of pipes relayed by "+owner+
+		"; requires a Winsock provider whose handles support ReadFile/WriteFile (viosock's do not)")
 	fs.StringVar(&s.Stderr, "stderr", StderrInherit, "child stderr: `mode` inherit ("+owner+"'s stderr), socket or null")
 }
 
@@ -69,9 +74,9 @@ func (s *Spec) Validate() error {
 // String describes the command and connection mode for logging.
 func (s *Spec) String() string {
 	cmd := s.Path + " " + strings.Join(s.Args[1:], " ")
-	mode := "socket handle as stdin/stdout"
-	if s.Pipe {
-		mode = "pipes relayed to the socket"
+	mode := "pipes relayed to the socket"
+	if s.Direct {
+		mode = "socket handle as stdin/stdout"
 	}
 	return fmt.Sprintf("%s via %s, child stderr: %s", strings.TrimSpace(cmd), mode, s.Stderr)
 }
@@ -88,10 +93,10 @@ func Run(log *logging.Logger, s *Spec, c *vsock.Conn) (int, error) {
 		"VSOCK_LOCAL_CID="+strconv.FormatUint(uint64(local.CID), 10),
 		"VSOCK_LOCAL_PORT="+strconv.FormatUint(uint64(local.Port), 10),
 	)
-	if s.Pipe {
+	if !s.Direct {
 		return runPiped(log, s, env, c)
 	}
-	log.Debugf("socket handle passed to the child directly; byte counts unavailable (use -pipe)")
+	log.Debugf("socket handle passed to the child directly; byte counts unavailable")
 	return runDirect(log, s, env, c)
 }
 

@@ -4,7 +4,7 @@
 //
 // Usage:
 //
-//	vsock-inetd -port 5000 [-allow-cid 2] [-pipe] [-v] -- C:\Windows\System32\cmd.exe /q
+//	vsock-inetd -port 5000 [-allow-cid 2] [-v] -- C:\Windows\System32\cmd.exe /q
 package main
 
 import (
