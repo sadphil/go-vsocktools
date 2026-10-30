@@ -248,6 +248,44 @@ Behaviour:
 2026/10/30 20:24:20.100771 vsock-tcpproxy[4120]: WARN  [#2 cid=5 port=1036] rejected connection from 5:1036: CID 5 not allowed
 ```
 
+## Test results
+
+Tested 2026-10-30 with the windows/amd64 builds of the code as of
+`d6affe1` on a Windows 11 guest (build 26300, viosock driver
+100.103.104.30200, guest CID 9500) under QEMU 10.2.3 / vhost-vsock-pci on
+Linux 6.18, with `socat` as the host-side peer. The fixes in `d6affe1`
+(pipes by default, credit back-off, netcat stdin after peer half-close)
+came out of this testing.
+
+| Tool | Test | Result |
+|---|---|---|
+| all | Winsock provider detection ("Virtio Vsock STREAM", AF 40), peer CID logging | pass |
+| vsock-netcat | listen and connect, data in both directions, half-close | pass |
+| vsock-netcat | `-z` against a refused port and an unknown CID; `-l -w 2s` timeout | pass, exit status 1 |
+| vsock-netcat | `-l -e cmd.exe`, child exit code becomes netcat's exit status | pass |
+| vsock-netcat | `-l -k`, three clients in a row | pass |
+| vsock-netcat | `-q 1s` with a peer that stays open | pass, closed 1.0 s after stdin EOF |
+| vsock-netcat | 32 MiB to a host reader that pauses 3 s (peer credit exhausted) | pass, SHA-256 matches |
+| vsock-inetd | `cmd.exe` for two concurrent clients, `VSOCK_*` environment, exit codes | pass |
+| vsock-inetd | `-stderr socket`, `-v` byte counts, `-allow-cid` rejection | pass |
+| vsock-inetd | `-wait`: second client accepted only when the first finished | pass |
+| vsock-inetd | program removed after startup | pass, error logged, client closed, keeps serving |
+| vsock-tcpproxy | SSH session to the guest's sshd through the proxy; 32 MiB scp | pass, SHA-256 matches |
+| vsock-tcpproxy | TCP target down | pass, error logged, client closed, keeps serving |
+| vsock-tcplisten | 32 MiB echo round trips through an `ssh -L` tunnel | pass, SHA-256 matches |
+| vsock-tcplisten | `-allow-ip` rejection; vsock target refused; unknown CID | pass, error logged, keeps serving |
+| tcpproxy + tcplisten | 20 parallel 1 MiB echo round trips, host → tcpproxy → TCP → tcplisten → host | pass, 20/20 in 1.8 s, no warnings |
+
+Driver probes (see [viosock driver notes](#viosock-driver-notes)):
+`ReadFile`/`WriteFile` on socket handles fail; `ioctlsocket(FIONREAD)` and
+zero-length `WSASend` (on an open connection and after the peer
+half-closed) are harmless; `select()` with more than one fd set bugchecks
+the guest.
+
+Not tested: Ctrl+C handling (sshd cannot deliver a console Ctrl+C),
+`vsock-netcat` with an interactive console as stdin, `-direct` with a
+provider that supports it, and the windows/arm64 builds.
+
 ## License
 
 BSD 3-Clause, see [LICENSE](LICENSE).
