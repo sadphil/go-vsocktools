@@ -43,10 +43,38 @@ Verified on Windows 11 (build 26300) with the viosock provider
   (`STATUS_BUFFER_TOO_SMALL`) instead of blocking. The tools retry with
   smaller chunks and then back off (up to 20 ms between attempts) until the
   peer frees space, so slow readers on the host side are handled.
-* **Avoid zero-length I/O.** During testing, zero-length `WSASend` calls (in
-  a probe also using `select()` and `FIONREAD`) were followed by the QEMU
-  process exiting; the exact trigger was not isolated. The tools never issue
-  zero-length reads or writes.
+* **`select()` is broken and can bugcheck Windows.** Calling `select()`
+  with **more than one non-empty fd set** (any two of read/write/exception,
+  with the same or different sockets) reproducibly crashes the guest with
+  stop code `0x10D WDF_VIOLATION`, parameter 1 `0x4` (NULL handle passed to
+  a framework method), caller `viosock.sys+0x182f1` (viosock driver
+  100.103.104.30200, virtio-win mm322). With a single set, a write set
+  works (also with several entries), while a read-only or exception-only
+  `select()` that has nothing ready fails with `WSAEINVAL` (not yet
+  explained).
+
+  *Root cause* (virtio-win `master` as of `bd196cda`, 2026-10-23, still
+  affected): all three fd sets share one handle array, and
+  `VIOSockSelectGetFdsWriteSet()`/`GetFdsExcptSet()` derive each set's start
+  from `FdCount[]` of the preceding sets. `VIOSockSelectCleanupPkt()`
+  (`viosock/sys/Device.c`) evaluates those macros only after the previous
+  `VIOSockSelectCleanupFds()` call has zeroed that set's count, so the next
+  set points back at entries that were just cleared to NULL and
+  `GetSocketContext(NULL)` bugchecks. The offset error dates back to
+  `cea94bb0` (2020), where it silently released the read set's socket
+  references a second time; `90935e49` (2026-04, mm321+) started clearing
+  the entries, which turned it into a deterministic bugcheck. The fix is to
+  compute all three set pointers before cleaning up any of them; a patch
+  exists (not yet built or submitted upstream).
+  With `-cpu ...,hv-passthrough` (which includes `hv-crash`) Windows
+  reports the bugcheck through the Hyper-V crash MSRs and QEMU's default
+  `-action panic=shutdown` ends the VM at once (QEMU 10.2.3), so neither a
+  dump nor a bugcheck code is recorded and the VM simply vanishes. Run QEMU
+  with `-d guest_errors -D qemu.log` to see the "HV crash parameters", or
+  with `-action panic=none` to let Windows write a dump.
+  `ioctlsocket(FIONREAD)` is harmless. The tools never call
+  `select()`/`WSAPoll`; all I/O is plain blocking `WSARecv`/`WSASend`. Do
+  not wrap these sockets in code that polls them.
 
 ## Building
 
