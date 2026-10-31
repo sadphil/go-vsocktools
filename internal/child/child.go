@@ -1,11 +1,11 @@
 // Package child runs a program for a vsock connection with the program's
-// standard input and output connected to the client: through anonymous pipes
-// relayed by the caller, or optionally by handing it the socket handle
-// itself.
+// standard input and output connected to the client: either by handing it
+// the socket itself (direct mode, the default on Linux) or through anonymous
+// pipes relayed by the caller (the default on Windows).
 //
-// Handing over the socket handle only works with Winsock providers whose
-// handles support ReadFile/WriteFile. The virtio-win viosock provider's do
-// not (both fail with ERROR_INVALID_PARAMETER), so pipes are the default.
+// On Windows, handing over the socket handle only works with Winsock
+// providers whose handles support ReadFile/WriteFile. The virtio-win viosock
+// provider's do not (both fail with ERROR_INVALID_PARAMETER).
 package child
 
 import (
@@ -18,9 +18,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sadphil/go-winvsocktools/internal/logging"
-	"github.com/sadphil/go-winvsocktools/internal/relay"
-	"github.com/sadphil/go-winvsocktools/internal/vsock"
+	"github.com/sadphil/go-vsocktools/internal/logging"
+	"github.com/sadphil/go-vsocktools/internal/relay"
+	"github.com/sadphil/go-vsocktools/internal/vsock"
 )
 
 // Child stderr destinations.
@@ -41,8 +41,8 @@ type Spec struct {
 // RegisterFlags registers -direct and -stderr on fs. owner is the name of the
 // program that relays data and owns the inherited stderr.
 func (s *Spec) RegisterFlags(fs *flag.FlagSet, owner string) {
-	fs.BoolVar(&s.Direct, "direct", false, "hand the socket handle itself to the child as stdin/stdout instead of pipes relayed by "+owner+
-		"; requires a Winsock provider whose handles support ReadFile/WriteFile (viosock's do not)")
+	fs.BoolVar(&s.Direct, "direct", defaultDirect, "hand the socket itself to the child as stdin/stdout instead of pipes relayed by "+owner+
+		"; on Windows requires a Winsock provider whose handles support ReadFile/WriteFile (viosock's do not)")
 	fs.StringVar(&s.Stderr, "stderr", StderrInherit, "child stderr: `mode` inherit ("+owner+"'s stderr), socket or null")
 }
 
@@ -76,7 +76,7 @@ func (s *Spec) String() string {
 	cmd := s.Path + " " + strings.Join(s.Args[1:], " ")
 	mode := "pipes relayed to the socket"
 	if s.Direct {
-		mode = "socket handle as stdin/stdout"
+		mode = "socket as stdin/stdout"
 	}
 	return fmt.Sprintf("%s via %s, child stderr: %s", strings.TrimSpace(cmd), mode, s.Stderr)
 }
@@ -96,7 +96,7 @@ func Run(log *logging.Logger, s *Spec, c *vsock.Conn) (int, error) {
 	if !s.Direct {
 		return runPiped(log, s, env, c)
 	}
-	log.Debugf("socket handle passed to the child directly; byte counts unavailable")
+	log.Debugf("socket passed to the child directly; byte counts unavailable")
 	return runDirect(log, s, env, c)
 }
 

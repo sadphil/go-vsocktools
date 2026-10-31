@@ -11,9 +11,13 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/sadphil/go-winvsocktools/internal/logging"
-	"github.com/sadphil/go-winvsocktools/internal/vsock"
+	"github.com/sadphil/go-vsocktools/internal/logging"
+	"github.com/sadphil/go-vsocktools/internal/vsock"
 )
+
+// Direct mode needs provider handles that support ReadFile/WriteFile, which
+// viosock's do not, so Windows relays through pipes by default.
+const defaultDirect = false
 
 // runDirect starts the child with the socket handle itself as its standard
 // input and output, waits for it to exit and returns its exit code.

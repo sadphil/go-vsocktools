@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sadphil/go-winvsocktools/internal/logging"
+	"github.com/sadphil/go-vsocktools/internal/logging"
 )
 
 // tcpPair returns both ends of a loopback TCP connection.

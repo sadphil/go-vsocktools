@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sadphil/go-winvsocktools/internal/logging"
-	"github.com/sadphil/go-winvsocktools/internal/relay"
+	"github.com/sadphil/go-vsocktools/internal/logging"
+	"github.com/sadphil/go-vsocktools/internal/relay"
 )
 
 // stdinPump reads stdin in a single goroutine for the life of the process.

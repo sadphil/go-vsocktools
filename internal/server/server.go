@@ -14,11 +14,12 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"sync/atomic"
+	"syscall"
 	"time"
 
-	"github.com/sadphil/go-winvsocktools/internal/logging"
-	"github.com/sadphil/go-winvsocktools/internal/version"
-	"github.com/sadphil/go-winvsocktools/internal/vsock"
+	"github.com/sadphil/go-vsocktools/internal/logging"
+	"github.com/sadphil/go-vsocktools/internal/version"
+	"github.com/sadphil/go-vsocktools/internal/vsock"
 )
 
 // Common holds the options shared by every tool.
@@ -36,7 +37,7 @@ func (c *Common) RegisterFlags(fs *flag.FlagSet) {
 
 // RegisterBaseFlags registers -af and -version on fs.
 func (c *Common) RegisterBaseFlags(fs *flag.FlagSet) {
-	fs.IntVar(&c.AF, "af", 0, "vsock address `family`; 0 detects the viosock Winsock provider")
+	fs.IntVar(&c.AF, "af", 0, "Windows: vsock address `family`; 0 detects the viosock Winsock provider")
 	fs.BoolVar(&c.Version, "version", false, "print version and exit")
 }
 
@@ -57,7 +58,7 @@ func (c *Common) ResolveAF(log *logging.Logger) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	log.Infof("using Winsock provider %q, address family %d", name, af)
+	log.Infof("using %s, address family %d", name, af)
 	return af, nil
 }
 
@@ -167,7 +168,7 @@ type Loop[C io.Closer] struct {
 // mode; the caller is expected to exit then.
 func Serve[C io.Closer](log *logging.Logger, l Loop[C]) error {
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
 	stop := make(chan struct{})
 	finished := make(chan struct{})

@@ -13,12 +13,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/sadphil/go-winvsocktools/internal/logging"
-	"github.com/sadphil/go-winvsocktools/internal/relay"
-	"github.com/sadphil/go-winvsocktools/internal/server"
-	"github.com/sadphil/go-winvsocktools/internal/tcpopt"
-	"github.com/sadphil/go-winvsocktools/internal/version"
-	"github.com/sadphil/go-winvsocktools/internal/vsock"
+	"github.com/sadphil/go-vsocktools/internal/logging"
+	"github.com/sadphil/go-vsocktools/internal/relay"
+	"github.com/sadphil/go-vsocktools/internal/server"
+	"github.com/sadphil/go-vsocktools/internal/tcpopt"
+	"github.com/sadphil/go-vsocktools/internal/version"
+	"github.com/sadphil/go-vsocktools/internal/vsock"
 )
 
 const program = "vsock-tcpproxy"

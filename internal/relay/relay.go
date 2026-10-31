@@ -7,7 +7,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/sadphil/go-winvsocktools/internal/logging"
+	"github.com/sadphil/go-vsocktools/internal/logging"
 )
 
 const bufSize = 64 * 1024

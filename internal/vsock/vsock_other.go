@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package vsock
 
@@ -7,7 +7,7 @@ import (
 	"io"
 )
 
-var errUnsupported = errors.New("vsock: only supported on windows")
+var errUnsupported = errors.New("vsock: only supported on windows and linux")
 
 // DetectAF is not supported on this platform.
 func DetectAF() (int, string, error) { return 0, "", errUnsupported }

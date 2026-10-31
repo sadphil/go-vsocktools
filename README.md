@@ -1,6 +1,8 @@
-# go-winvsocktools
+# go-vsocktools
 
-Virtio vsock tools for Microsoft Windows guests running under KVM/QEMU.
+Virtio vsock tools for Linux and Windows, on KVM/QEMU hosts and guests:
+the same four programs run on a Linux host, in Linux guests and in Windows
+guests, and talk to each other.
 
 | Program | What it does |
 |---|---|
@@ -58,14 +60,21 @@ vsock, and `vsock-netcat` covers scripting and ad-hoc transfers.
 
 ## Requirements
 
-* Windows guest with the **viosock** driver from
-  [virtio-win](https://github.com/virtio-win/kvm-guest-drivers-windows)
-  installed (it provides the vsock Winsock provider).
 * A vsock device on the VM, e.g. `-device vhost-vsock-pci,guest-cid=3`
   or `<vsock model='virtio'><cid auto='yes'/></vsock>` in libvirt.
+* **Linux host:** the `vhost_vsock` kernel module (loaded automatically by
+  QEMU's `vhost-vsock-pci`). The host is CID 2.
+* **Linux guest:** the `vmw_vsock_virtio_transport` kernel module, which
+  most distributions load automatically when the device is present.
+* **Windows guest:** the **viosock** driver from
+  [virtio-win](https://github.com/virtio-win/kvm-guest-drivers-windows),
+  which provides the vsock Winsock provider. Its address family is looked
+  up in the Winsock catalog at startup; if detection fails, pass it with
+  `-af` (viosock uses 40).
 
-The vsock address family is looked up in the Winsock catalog at startup.
-If detection fails, pass it with `-af` (viosock uses 40).
+On Linux, CID 1 is the local machine itself, given the `vsock_loopback`
+kernel module. That is handy for trying the tools without a VM, and the
+integration tests use it.
 
 ## viosock driver notes
 
@@ -119,15 +128,23 @@ Verified on Windows 11 (build 26300) with the viosock provider
 
 ## Building
 
-Go 1.25 or newer and GNU make:
+Go 1.25 or newer and GNU make. Builds are static (`CGO_ENABLED=0`) and
+can be made on any OS:
 
 ```sh
-make                 # bin/windows-amd64/*.exe and bin/windows-arm64/*.exe
-make windows-amd64   # x64 only
-make windows-arm64   # ARM64 only
-make vet test        # static checks and unit tests
-make dist            # zip archive per architecture
+make                 # every program for windows and linux, amd64 and arm64
+make windows         # bin/windows-amd64/*.exe and bin/windows-arm64/*.exe
+make linux           # bin/linux-amd64/* and bin/linux-arm64/*
+make linux-amd64     # one OS/architecture (also windows-amd64, ...)
+make vet test        # static checks and tests
+make dist            # .zip (windows) or .tar.gz (linux) per OS/architecture
 ```
+
+`make test` includes end-to-end tests (`internal/e2e`) that build the tools
+and run them against each other over vsock loopback on Linux: netcat in both
+directions, tcpproxy with ten parallel clients, tcplisten, inetd in direct
+and pipe mode, and CID filtering. They are skipped unless the
+`vsock_loopback` kernel module is loaded (`sudo modprobe vsock_loopback`).
 
 ## Common options
 
@@ -135,7 +152,7 @@ All tools:
 
 | Flag | Meaning |
 |---|---|
-| `-af N` | vsock address family; 0 (default) detects it |
+| `-af N` | Windows only: vsock address family; 0 (default) detects it |
 | `-v` | verbose: log every read/write with its byte count (vsock-netcat: see below) |
 | `-version` | print version |
 
@@ -173,7 +190,9 @@ plus the TCP options above.
 When one side finishes sending, the other side is half-closed, so
 request/response protocols relying on shutdown work through the proxy.
 
-From the host: `socat TCP-LISTEN:13389,fork VSOCK-CONNECT:3:3389`.
+From a Linux host, expose it as a local TCP port with
+`vsock-tcplisten -listen 127.0.0.1:13389 -cid 3 -port 3389`
+(or `socat TCP-LISTEN:13389,fork VSOCK-CONNECT:3:3389`).
 
 ## vsock-tcplisten
 
@@ -195,13 +214,16 @@ plus the TCP options above (keepalive is applied to accepted connections).
 Listening on all interfaces exposes the vsock service to the network; prefer
 a loopback address or restrict clients with `-allow-ip`.
 
-On the host, e.g.: `socat VSOCK-LISTEN:22,fork TCP:127.0.0.1:22`.
+On a Linux host, the matching vsock service could be
+`vsock-tcpproxy -port 22 -target 127.0.0.1:22 -allow-cid 3`
+(or `socat VSOCK-LISTEN:22,fork TCP:127.0.0.1:22`).
 
 ## vsock-inetd
 
-```bat
-vsock-inetd -port 5000 -allow-cid 2 -- C:\Windows\System32\cmd.exe /q
+```sh
+vsock-inetd -port 5000 -allow-cid 2 -- C:\Windows\System32\cmd.exe /q        # Windows
 vsock-inetd -port 5001 -stderr socket -v -- powershell.exe -NoLogo -NoProfile -Command -
+vsock-inetd -port 5000 -allow-cid 3 -- /bin/sh -c 'uptime; cat /proc/loadavg'  # Linux
 ```
 
 Everything after the flags (or after `--`) is the program and its
@@ -210,18 +232,24 @@ arguments. The program is resolved through `PATH` once at startup.
 | Flag | Default | Meaning |
 |---|---|---|
 | `-wait` | `false` | inetd *wait* mode: serve one client at a time |
-| `-direct` | `false` | hand the socket handle itself to the child instead of relayed pipes (not supported by viosock, see below) |
+| `-direct` | Linux `true`, Windows `false` | hand the socket itself to the child instead of relayed pipes (not supported by viosock, see below) |
 | `-stderr MODE` | `inherit` | child stderr: `inherit` (vsock-inetd's stderr), `socket` or `null` |
 
 The child environment additionally contains `VSOCK_REMOTE_CID`,
 `VSOCK_REMOTE_PORT`, `VSOCK_LOCAL_CID` and `VSOCK_LOCAL_PORT`.
 
-**Pipe mode (default).** The child's stdin/stdout are anonymous pipes and
-vsock-inetd copies between them and the socket, so `-v` shows every
-transfer. Pipes are inherited through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`,
-so concurrently started children never see each other's handles.
+**Direct mode (default on Linux).** The accepted socket itself becomes the
+child's stdin and stdout, like classic inetd, and the data does not pass
+through vsock-inetd (so `-v` cannot count bytes). On Linux this is a plain
+file descriptor and works with any program.
 
-**Handle mode (`-direct`).** The accepted SOCKET itself is made the child's
+**Pipe mode (default on Windows, `-direct=false`).** The child's
+stdin/stdout are anonymous pipes and vsock-inetd copies between them and
+the socket, so `-v` shows every transfer. On Windows, pipes are inherited
+through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, so concurrently started
+children never see each other's handles.
+
+**Direct mode on Windows (`-direct`).** The accepted SOCKET itself is made the child's
 `hStdInput`/`hStdOutput` through `STARTUPINFO`, like classic inetd, and the
 data does not pass through vsock-inetd. This requires a Winsock provider
 whose socket handles work with `ReadFile`/`WriteFile`. **The virtio-win
@@ -230,22 +258,23 @@ viosock provider's do not**: both calls fail with `ERROR_INVALID_PARAMETER`
 at once reporting "The process tried to write to a nonexistent pipe". The
 mode is kept for providers that support it.
 
-From the host: `socat - VSOCK-CONNECT:3:5000`.
+From the host: `vsock-netcat 3 5000` (or `socat - VSOCK-CONNECT:3:5000`).
 
 ## vsock-netcat
 
-```bat
-vsock-netcat [options] CID PORT        :: connect: stdin -> vsock, vsock -> stdout
-vsock-netcat -l [options] PORT         :: listen, serve one client, exit
-vsock-netcat -l -k [options] PORT      :: keep listening, clients one after another
+```sh
+vsock-netcat [options] CID PORT        # connect: stdin -> vsock, vsock -> stdout
+vsock-netcat -l [options] PORT         # listen, serve one client, exit
+vsock-netcat -l -k [options] PORT      # keep listening, clients one after another
 ```
 
 Examples:
 
-```bat
-vsock-netcat 2 5000 < request.bin > response.bin
-vsock-netcat -z -w 2s 2 5000 && echo host is listening
-vsock-netcat -l -k -e cmd.exe 5000
+```sh
+vsock-netcat 2 5000 < request.bin > response.bin       # guest -> host
+vsock-netcat -z -w 2s 3 5000 && echo guest 3 is listening
+vsock-netcat -l -k -e cmd.exe 5000                     # Windows shell service
+vsock-netcat -l -e /bin/sh 5000                        # Linux shell service
 ```
 
 | Flag | Default | Meaning |
@@ -270,8 +299,8 @@ Behaviour:
   `-vv` add connection and transfer details. Flags may follow the
   positional arguments (`vsock-netcat 2 5000 -v`).
 * **Binary-safe.** stdin and stdout are copied byte for byte. From an
-  interactive console input is line-buffered by Windows; Ctrl+Z, Enter sends
-  EOF and Ctrl+C exits.
+  interactive terminal input is line-buffered; Ctrl+D on Linux or Ctrl+Z,
+  Enter on Windows sends EOF, and Ctrl+C exits.
 * **Exit status:** 0 on success; with `-e`, the child's exit code;
   1 when connecting, listening or relaying fails or no client arrives
   within `-w`; 2 for usage errors.
@@ -290,6 +319,8 @@ Behaviour:
 ```
 
 ## Test results
+
+### Windows guest (viosock)
 
 Tested 2026-10-30 with the windows/amd64 builds of the code as of
 `d6affe1` on a Windows 11 guest (build 26300, viosock driver
@@ -323,9 +354,22 @@ zero-length `WSASend` (on an open connection and after the peer
 half-closed) are harmless; `select()` with more than one fd set bugchecks
 the guest.
 
-Not tested: Ctrl+C handling (sshd cannot deliver a console Ctrl+C),
-`vsock-netcat` with an interactive console as stdin, `-direct` with a
-provider that supports it, and the windows/arm64 builds.
+### Linux and mixed Linux/Windows
+
+Tested 2026-11-01 with the linux/amd64 builds on the Linux 6.18 host, and
+the windows/amd64 builds in a second Windows 11 guest (CID 9501).
+
+| Test | Result |
+|---|---|
+| `internal/e2e` over vsock loopback: netcat both directions and failure exit codes, tcpproxy with 10 parallel 1 MiB echoes, tcplisten 4 MiB echo, inetd direct and pipe mode with `VSOCK_*` environment, `-allow-cid` rejection | pass, also 5× under `-race` |
+| Linux netcat client → Windows netcat listener, and the reverse | pass, both directions |
+| Windows netcat → Linux vsock-inetd (direct mode, `/bin/sh`) | pass, `VSOCK_REMOTE_CID=9501` |
+| SSH from the host through Linux vsock-tcplisten → vsock → Windows vsock-tcpproxy → sshd; 32 MiB scp | pass, SHA-256 matches, 1.1 s |
+
+Not tested: Ctrl+C handling on Windows (sshd cannot deliver a console
+Ctrl+C), `vsock-netcat` with an interactive console as stdin, `-direct`
+with a Windows provider that supports it, Linux guests, and the arm64
+builds.
 
 ## License
 

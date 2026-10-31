@@ -1,5 +1,12 @@
-module github.com/sadphil/go-winvsocktools
+module github.com/sadphil/go-vsocktools
 
 go 1.25.0
 
 require golang.org/x/sys v0.46.0
+
+require (
+	github.com/mdlayher/socket v0.6.0 // indirect
+	github.com/mdlayher/vsock v1.3.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+)

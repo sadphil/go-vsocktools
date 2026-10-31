@@ -52,7 +52,7 @@ func wsaStartup() error {
 }
 
 // DetectAF looks up the virtio vsock provider in the Winsock catalog and
-// returns its address family together with the provider's protocol name.
+// returns its address family together with a description of the provider.
 func DetectAF() (int, string, error) {
 	if err := wsaStartup(); err != nil {
 		return 0, "", err
@@ -77,14 +77,14 @@ func DetectAF() (int, string, error) {
 			continue
 		}
 		if strings.Contains(name, "vsock") || strings.Contains(name, "viosock") || strings.Contains(name, "virtio") {
-			return int(p.AddressFamily), windows.UTF16ToString(p.ProtocolName[:]), nil
+			return int(p.AddressFamily), fmt.Sprintf("Winsock provider %q", windows.UTF16ToString(p.ProtocolName[:])), nil
 		}
 		if p.AddressFamily == DefaultAF && fallback == nil {
 			fallback = p
 		}
 	}
 	if fallback != nil {
-		return DefaultAF, windows.UTF16ToString(fallback.ProtocolName[:]), nil
+		return DefaultAF, fmt.Sprintf("Winsock provider %q", windows.UTF16ToString(fallback.ProtocolName[:])), nil
 	}
 	return 0, "", errors.New("virtio vsock Winsock provider not found (is the viosock driver installed?)")
 }

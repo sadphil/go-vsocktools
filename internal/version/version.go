@@ -1,5 +1,5 @@
 // Package version holds the build version, injected by the Makefile via
-// -ldflags "-X github.com/sadphil/go-winvsocktools/internal/version.Version=...".
+// -ldflags "-X github.com/sadphil/go-vsocktools/internal/version.Version=...".
 package version
 
 // Version is the program version.
