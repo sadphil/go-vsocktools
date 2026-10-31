@@ -15,6 +15,47 @@ own goroutine (inetd *nowait*), and log each accepted, rejected and finished
 connection to stderr. With `-v` they also log the size of every read and
 write.
 
+## Why virtio sockets
+
+A virtual socket (vsock, `AF_VSOCK`) is a stream channel between a virtual
+machine and its hypervisor host, carried over a virtio device instead of a
+network. Endpoints are addressed by a *context ID* (CID) and a port: the
+host is always CID 2, and each guest gets its own CID from the VM
+configuration. Using it instead of TCP/IP between host and guest has
+practical benefits:
+
+* **No network needed.** There are no IP addresses, subnets, DHCP, routes,
+  bridges, NAT or port forwarding to set up. The channel works when the
+  guest has no network adapter at all, when its network is down or
+  misconfigured, or when the VM is deliberately isolated from every
+  network.
+* **Not reachable from the network.** A vsock service can only be reached
+  by the host (or, where the hypervisor allows it, by sibling VMs), never
+  by other machines on the LAN or the internet. It does not depend on
+  firewall rules to stay private, and a network misconfiguration cannot
+  expose it.
+* **The hypervisor vouches for the peer.** The host assigns CIDs, and a
+  guest cannot claim another guest's CID. A service can therefore decide
+  which machine may connect by CID (`-allow-cid 2` accepts only the
+  host). The CID identifies the machine, not the user or process on it:
+  any process on the host can connect from CID 2.
+* **Stable, simple addressing.** A guest's CID stays the same no matter how
+  its network is renumbered or reconfigured, so host-side tooling always
+  knows where to connect.
+* **Less overhead and fewer moving parts.** Data goes through the virtio
+  transport directly, without IP routing, TCP congestion control, checksums
+  or the guest's network stack and firewall in the path.
+
+Typical uses are management and automation from the host (remote shells,
+agents, configuration and provisioning), reaching RDP or SSH in a guest
+that has no network, collecting logs or metrics, and moving files into or
+out of isolated VMs.
+
+These tools make that channel usable without changing existing software:
+`vsock-tcpproxy` and `vsock-tcplisten` connect vsock to ordinary TCP
+programs in either direction, `vsock-inetd` serves any console program over
+vsock, and `vsock-netcat` covers scripting and ad-hoc transfers.
+
 ## Requirements
 
 * Windows guest with the **viosock** driver from
